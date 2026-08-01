@@ -2,22 +2,38 @@ name: Judge
 on:
   workflow_dispatch:
     inputs:
-      payload:
-        description: 'Judge payload'
+      judge_id:
+        description: 'Judge ID'
         required: true
  
 jobs:
   judge:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: judge-data
+ 
+      - name: Install pyyaml
+        run: pip install pyyaml -q
+ 
       - name: Judge
         run: |
-          cat << 'PYEOF' > judge.py
-          import json, os, subprocess, base64, zipfile, io, re, tempfile, shutil, sys, yaml
+          JUDGE_ID=${{ github.event.inputs.judge_id }}
+          PAYLOAD_FILE="judge-data/${JUDGE_ID}-payload.json"
+          TESTDATA_FILE="judge-data/${JUDGE_ID}-testdata.zip"
  
-          payload = json.loads(os.environ['PAYLOAD'])
-          judge_id = payload['judge_id']
-          task_id = payload['task_id']
+          cat << 'PYEOF' > judge.py
+          import json, os, subprocess, base64, zipfile, io, tempfile, shutil, sys, yaml, time as tmod
+ 
+          judge_id = os.environ['JUDGE_ID']
+          payload_file = os.environ['PAYLOAD_FILE']
+          testdata_file = os.environ['TESTDATA_FILE']
+ 
+          with open(payload_file) as f:
+              payload = json.load(f)
+ 
           language = payload.get('language', 'cpp')
           code = payload.get('code', '')
           time_limit = int(payload.get('time_limit', 1000))
@@ -28,21 +44,22 @@ jobs:
           testdata_dir = os.path.join(workdir, 'testdata')
           os.makedirs(testdata_dir, exist_ok=True)
  
-          # 解压测试数据
-          if payload.get('testdata'):
-              zdata = base64.b64decode(payload['testdata'])
-              with zipfile.ZipFile(io.BytesIO(zdata)) as z:
+          if os.path.exists(testdata_file):
+              with zipfile.ZipFile(testdata_file) as z:
                   z.extractall(testdata_dir)
  
-          # 语言配置
           LANG = {
-              'cpp':   {'ext': 'cpp', 'compile': ['g++', '-O2', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
-              'cpp14': {'ext': 'cpp', 'compile': ['g++', '-std=c++14', '-O2', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
-              'c':     {'ext': 'c',   'compile': ['gcc', '-O2', '-o', 'sol', 'sol.c'], 'run': ['./sol']},
-              'python3': {'ext': 'py', 'compile': None, 'run': ['python3', 'sol.py']},
-              'python2': {'ext': 'py', 'compile': None, 'run': ['python2', 'sol.py']},
-              'java':  {'ext': 'java', 'compile': ['javac', 'sol.java'], 'run': ['java', 'sol']},
-              'pascal':{'ext': 'pas', 'compile': ['fpc', 'sol.pas'], 'run': ['./sol']},
+              'cpp':    {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'cpp11':  {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++11', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'cpp17':  {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'c':      {'ext': 'c',   'compile': ['gcc', '-O2', '-o', 'sol', 'sol.c'], 'run': ['./sol']},
+              'python3':{'ext': 'py', 'compile': None, 'run': ['python3', 'sol.py']},
+              'python2':{'ext': 'py', 'compile': None, 'run': ['python2', 'sol.py']},
+              'java':   {'ext': 'java', 'compile': ['javac', 'sol.java'], 'run': ['java', 'sol']},
+              'pascal': {'ext': 'pas', 'compile': ['fpc', 'sol.pas'], 'run': ['./sol']},
+              'ruby':   {'ext': 'rb', 'compile': None, 'run': ['ruby', 'sol.rb']},
+              'haskell':{'ext': 'hs', 'compile': ['ghc', '-O2', '-o', 'sol', 'sol.hs'], 'run': ['./sol']},
+              'nodejs': {'ext': 'js', 'compile': None, 'run': ['node', 'sol.js']},
           }
  
           lang_cfg = LANG.get(language, LANG['cpp'])
@@ -52,12 +69,9 @@ jobs:
               f.write(code)
  
           result = {
-              'score': 0,
-              'status': 'System Error',
-              'total_time': 0,
-              'max_memory': 0,
-              'compilation': None,
-              'detail': {'compile': None, 'judge': {'subtasks': []}}
+              'compile': None,
+              'judge': {'subtasks': []},
+              'error': None
           }
  
           # 编译
@@ -68,19 +82,17 @@ jobs:
                       cwd=workdir,
                       capture_output=True, text=True, timeout=30
                   )
-                  result['compilation'] = cp.stdout + cp.stderr
-                  result['detail']['compile'] = {
-                      'status': 0 if cp.returncode == 0 else 1,
-                      'message': cp.stdout + cp.stderr
-                  }
+                  compile_status = 0 if cp.returncode == 0 else 1
+                  compile_msg = cp.stdout + cp.stderr
+                  result['compile'] = {'status': compile_status, 'message': compile_msg}
                   if cp.returncode != 0:
-                      result['status'] = 'Compile Error'
-                      print(json.dumps(result))
+                      with open('result.json', 'w') as f:
+                          json.dump(result, f)
                       sys.exit(0)
               except Exception as e:
-                  result['status'] = 'Compile Error'
-                  result['compilation'] = str(e)
-                  print(json.dumps(result))
+                  result['compile'] = {'status': 1, 'message': str(e)}
+                  with open('result.json', 'w') as f:
+                      json.dump(result, f)
                   sys.exit(0)
  
           # 读取 data.yml
@@ -90,15 +102,23 @@ jobs:
           output_pat = '#.out'
           spj_lang = None
           spj_file = None
+          interactor_lang = None
+          interactor_file = None
+          extra_source_files = []
  
           if os.path.exists(data_yml_path):
               with open(data_yml_path) as f:
-                  dy = yaml.safe_load(f)
+                  dy = yaml.safe_load(f) or {}
               input_pat = dy.get('inputFile', '#.in')
               output_pat = dy.get('outputFile', dy.get('answerFile', '#.out'))
               if dy.get('specialJudge'):
                   spj_lang = dy['specialJudge']['language']
                   spj_file = dy['specialJudge']['fileName']
+              if dy.get('interactor'):
+                  interactor_lang = dy['interactor']['language']
+                  interactor_file = dy['interactor']['fileName']
+              if dy.get('extraSourceFiles'):
+                  extra_source_files = dy['extraSourceFiles']
               if dy.get('subtasks'):
                   for st in dy['subtasks']:
                       subtasks.append({
@@ -106,81 +126,175 @@ jobs:
                           'type': st.get('type', 'sum'),
                           'cases': [str(c) for c in st['cases']]
                       })
+              if problem_type == 'submit-answer' and dy.get('userOutput'):
+                  output_pat = dy['userOutput']
  
-          # 自动检测测试点
+          # 自动检测
           if not subtasks:
-              ins = sorted([f for f in os.listdir(testdata_dir) if f.endswith('.in')])
+              td_files = os.listdir(testdata_dir)
+              ins = sorted([f for f in td_files if f.endswith('.in')])
               cases = []
               for inf in ins:
                   base = inf[:-3]
-                  outf = base + '.out' if os.path.exists(os.path.join(testdata_dir, base+'.out')) else base + '.ans'
                   cases.append(base)
-              subtasks = [{'score': 100, 'type': 'sum', 'cases': cases}]
-              input_pat = '#.in'
-              output_pat = '#.out' if any(f.endswith('.out') for f in os.listdir(testdata_dir)) else '#.ans'
+              if cases:
+                  subtasks = [{'score': 100, 'type': 'sum', 'cases': cases}]
+                  has_out = any(f.endswith('.out') for f in td_files)
+                  has_ans = any(f.endswith('.ans') for f in td_files)
+                  input_pat = '#.in'
+                  output_pat = '#.out' if has_out else '#.ans'
  
-          # 检测 SPJ（无 data.yml 时）
+          # 检测 SPJ（无 data.yml）
           if not spj_file:
               for f in os.listdir(testdata_dir):
                   if f.startswith('spj_'):
-                      spj_lang = f.split('_')[1].split('.')[0]
+                      parts = f[4:].split('.')
+                      spj_lang = parts[0]
                       spj_file = f
                       break
  
           # 编译 SPJ
           spj_bin = None
-          if spj_file and spj_lang == 'cpp':
+          if spj_file:
               spj_path = os.path.join(testdata_dir, spj_file)
               spj_bin = os.path.join(workdir, 'spj')
-              subprocess.run(['g++', '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
+              if spj_lang in ('cpp', 'c'):
+                  cc = 'g++' if spj_lang == 'cpp' else 'gcc'
+                  subprocess.run([cc, '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
  
-          STATUS_MAP = {
-              'AC': 'Accepted', 'WA': 'Wrong Answer', 'TLE': 'Time Limit Exceeded',
-              'MLE': 'Memory Limit Exceeded', 'RE': 'Runtime Error', 'PC': 'Partially Correct'
-          }
+          # 编译交互器
+          interactor_bin = None
+          if interactor_file:
+              interactor_path = os.path.join(testdata_dir, interactor_file)
+              interactor_bin = os.path.join(workdir, 'interactor')
+              if interactor_lang in ('cpp', 'c'):
+                  cc = 'g++' if interactor_lang == 'cpp' else 'gcc'
+                  subprocess.run([cc, '-O2', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
+ 
+          # 复制附加源文件
+          for esf in extra_source_files:
+              if esf.get('language') == language:
+                  for fobj in esf.get('files', []):
+                      src = os.path.join(testdata_dir, fobj['name'])
+                      dst = os.path.join(workdir, fobj['dest'])
+                      if os.path.exists(src):
+                          shutil.copy2(src, dst)
+ 
+          # 类型映射（匹配原版 SYZOJ judger_interfaces）
+          # 0=Accepted, 1=WrongAnswer, 4=TLE, 5=MLE, 6=RE, 9=PartiallyCorrect
+          TASK_DONE = 0
+          TASK_FAILED = 1
  
           def run_case(case_id):
-              in_file = os.path.join(testdata_dir, input_pat.replace('#', case_id))
-              out_file = os.path.join(testdata_dir, output_pat.replace('#', case_id))
+              in_file = os.path.join(testdata_dir, input_pat.replace('#', str(case_id)))
+              out_file = os.path.join(testdata_dir, output_pat.replace('#', str(case_id)))
+ 
               if not os.path.exists(in_file):
-                  return {'status': 1, 'type': 6, 'score': 0, 'time': 0, 'memory': 0, 'result': None}
+                  return {'status': TASK_FAILED, 'result': {'type': 6, 'time': 0, 'memory': 0, 'scoringRate': 0}}
  
               case_dir = tempfile.mkdtemp()
               try:
-                  import resource, signal
                   with open(in_file) as fin:
                       inp = fin.read()
  
-                  import time as tmod
-                  start = tmod.time()
-                  try:
-                      proc = subprocess.run(
-                          lang_cfg['run'],
-                          cwd=workdir,
-                          input=inp, capture_output=True, text=True,
-                          timeout=time_limit / 1000 + 1
-                      )
-                      elapsed = int((tmod.time() - start) * 1000)
-                      user_out = proc.stdout
-                      if proc.returncode != 0:
-                          return {'status': 2, 'type': 6, 'score': 0, 'time': elapsed, 'memory': 0,
-                                  'result': {'type': 6, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
-                      if elapsed > time_limit:
-                          return {'status': 2, 'type': 4, 'score': 0, 'time': elapsed, 'memory': 0,
-                                  'result': {'type': 4, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
-                  except subprocess.TimeoutExpired:
-                      return {'status': 2, 'type': 4, 'score': 0, 'time': time_limit, 'memory': 0,
-                              'result': {'type': 4, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+                  # 交互题
+                  if problem_type == 'interaction' and interactor_bin:
+                      user_input = os.path.join(case_dir, 'user_input')
+                      user_output = os.path.join(case_dir, 'user_output')
+                      with open(user_input, 'w') as f: f.write('')
+                      with open(user_output, 'w') as f: f.write('')
  
-                  # 判断结果
+                      start = tmod.time()
+                      try:
+                          inter_proc = subprocess.Popen(
+                              [interactor_bin],
+                              cwd=case_dir,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                          )
+                          # 交互器 stdin <- 选手 stdout, 交互器 stdout -> 选手 stdin
+                          with open(in_file) as f:
+                              shutil.copy2(in_file, os.path.join(case_dir, 'input'))
+ 
+                          user_proc = subprocess.Popen(
+                              lang_cfg['run'],
+                              cwd=workdir,
+                              stdin=inter_proc.stdout,
+                              stdout=inter_proc.stdin,
+                              stderr=subprocess.PIPE
+                          )
+                          inter_proc.stdin.close()
+                          inter_proc.stdout.close()
+ 
+                          user_out, user_err = user_proc.communicate(timeout=time_limit/1000+1)
+                          inter_out, inter_err = inter_proc.communicate(timeout=5)
+                          elapsed = int((tmod.time() - start) * 1000)
+ 
+                          if user_proc.returncode != 0:
+                              return {'status': TASK_DONE, 'result': {'type': 6, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+ 
+                          score_file = os.path.join(case_dir, 'score.txt')
+                          if os.path.exists(score_file):
+                              with open(score_file) as f:
+                                  score_val = float(f.read().strip())
+                          else:
+                              score_val = 0
+                          scoring_rate = score_val / 100
+                          tc_type = 0 if scoring_rate >= 1.0 else (9 if scoring_rate > 0 else 1)
+                          return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
+ 
+                      except subprocess.TimeoutExpired:
+                          user_proc.kill()
+                          inter_proc.kill()
+                          return {'status': TASK_DONE, 'result': {'type': 4, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+ 
+                  # 传统题 / 提交答案题
+                  if problem_type == 'submit-answer':
+                      # extra_data 是选手提交的答案 zip
+                      if payload.get('extra_data'):
+                          ans_zip = base64.b64decode(payload['extra_data'])
+                          user_out_file = output_pat.replace('#', str(case_id))
+                          with zipfile.ZipFile(io.BytesIO(ans_zip)) as az:
+                              try:
+                                  user_out = az.read(user_out_file).decode()
+                              except KeyError:
+                                  # 尝试不带路径
+                                  for n in az.namelist():
+                                      if os.path.basename(n) == user_out_file:
+                                          user_out = az.read(n).decode()
+                                          break
+                                  else:
+                                      return {'status': TASK_DONE, 'result': {'type': 1, 'time': 0, 'memory': 0, 'scoringRate': 0}}
+                      else:
+                          user_out = ''
+                      elapsed = 0
+                  else:
+                      start = tmod.time()
+                      try:
+                          proc = subprocess.run(
+                              lang_cfg['run'],
+                              cwd=workdir,
+                              input=inp, capture_output=True, text=True,
+                              timeout=time_limit/1000+1
+                          )
+                          elapsed = int((tmod.time() - start) * 1000)
+                          user_out = proc.stdout
+                          if proc.returncode != 0:
+                              return {'status': TASK_DONE, 'result': {'type': 6, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                          if elapsed > time_limit:
+                              return {'status': TASK_DONE, 'result': {'type': 4, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                      except subprocess.TimeoutExpired:
+                          return {'status': TASK_DONE, 'result': {'type': 4, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+ 
+                  # SPJ 判断
                   if spj_bin:
                       user_out_file = os.path.join(case_dir, 'user_out')
                       with open(user_out_file, 'w') as f: f.write(user_out)
                       spj_input = os.path.join(case_dir, 'input')
                       spj_answer = os.path.join(case_dir, 'answer')
                       spj_code = os.path.join(case_dir, 'code')
-                      shutil.copy(in_file, spj_input)
-                      shutil.copy(out_file, spj_answer)
+                      shutil.copy2(in_file, spj_input)
+                      if os.path.exists(out_file):
+                          shutil.copy2(out_file, spj_answer)
                       with open(spj_code, 'w') as f: f.write(code)
                       sp = subprocess.run(
                           [spj_bin],
@@ -192,41 +306,38 @@ jobs:
                       except:
                           scoring_rate = 0
                       tc_type = 0 if scoring_rate >= 1.0 else (9 if scoring_rate > 0 else 1)
-                      return {'status': 2, 'type': tc_type, 'score': scoring_rate * 100,
-                              'time': elapsed, 'memory': 0,
-                              'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
+                      return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
                   else:
+                      # 文本比较
+                      if not os.path.exists(out_file):
+                          return {'status': TASK_DONE, 'result': {'type': 1, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
                       with open(out_file) as f: expected = f.read()
                       ac = user_out.rstrip() == expected.rstrip()
                       tc_type = 0 if ac else 1
-                      return {'status': 2, 'type': tc_type, 'score': 100 if ac else 0,
-                              'time': elapsed, 'memory': 0,
-                              'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': 1.0 if ac else 0.0}}
+                      return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': 1.0 if ac else 0.0}}
               finally:
                   shutil.rmtree(case_dir, ignore_errors=True)
  
           # 跑所有子任务
-          total_score = 0
-          total_time = 0
-          max_memory = 0
-          all_status = []
           detail_subtasks = []
- 
-          for st in subtasks:
+          for idx, st in enumerate(subtasks):
               st_cases = []
               st_scores = []
               for cid in st['cases']:
-                  r = run_case(str(cid))
-                  st_cases.append(r)
-                  st_scores.append(r['score'])
-                  total_time += r['time']
-                  all_status.append(r['type'])
+                  r = run_case(cid)
+                  case_result = r['result']
+                  case_result['caseId'] = cid
+                  st_cases.append({
+                      'status': r['status'],
+                      'result': case_result
+                  })
+                  st_scores.append(case_result.get('scoringRate', 0) * 100)
  
-              # 计算子任务分数
+              # 子任务分数计算
               if st['type'] == 'sum':
-                  st_score = st['score'] * sum(st_scores) / (100 * len(st_scores))
+                  st_score = st['score'] * sum(st_scores) / (100 * len(st_scores)) if st_scores else 0
               elif st['type'] == 'min':
-                  st_score = st['score'] * min(st_scores) / 100
+                  st_score = st['score'] * min(st_scores) / 100 if st_scores else 0
               elif st['type'] == 'mul':
                   m = 1.0
                   for s in st_scores: m *= s / 100
@@ -234,37 +345,26 @@ jobs:
               else:
                   st_score = 0
  
-              total_score += st_score
               detail_subtasks.append({
+                  'id': idx,
                   'score': st_score,
-                  'cases': [c['result'] for c in st_cases if c['result']]
+                  'type': st['type'],
+                  'cases': st_cases
               })
  
-          # 最终状态
-          STATUS_TYPE = {0: 'Accepted', 1: 'Wrong Answer', 4: 'Time Limit Exceeded',
-                         5: 'Memory Limit Exceeded', 6: 'Runtime Error', 9: 'Partially Correct'}
-          if all(s == 0 for s in all_status):
-              final_status = 'Accepted'
-          else:
-              non_ac = next((s for s in all_status if s != 0), 1)
-              final_status = STATUS_TYPE.get(non_ac, 'Wrong Answer')
+          result['judge'] = {'subtasks': detail_subtasks}
  
-          result['score'] = round(total_score)
-          result['status'] = final_status
-          result['total_time'] = total_time
-          result['max_memory'] = max_memory
-          result['detail']['judge'] = {'subtasks': detail_subtasks}
+          with open('result.json', 'w') as f:
+              json.dump(result, f, indent=2)
  
-          print(json.dumps(result))
+          print("Judge completed.")
           PYEOF
-          pip install pyyaml -q
-          echo '${{ github.event.inputs.payload }}' > /tmp/payload.json
-          PAYLOAD=$(cat /tmp/payload.json) python3 judge.py > result.json
-          cat result.json
+ 
+          JUDGE_ID=$JUDGE_ID PAYLOAD_FILE=$PAYLOAD_FILE TESTDATA_FILE=$TESTDATA_FILE python3 judge.py
  
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: result-${{ fromJson(github.event.inputs.payload).judge_id }}
+          name: result-${{ github.event.inputs.judge_id }}
           path: result.json
           retention-days: 1
