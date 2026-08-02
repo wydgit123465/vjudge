@@ -28,7 +28,7 @@ jobs:
           JUDGE_ID: ${{ github.event.inputs.judge_id }}
           PAYLOAD_FILE: judge-data/${{ github.event.inputs.judge_id }}-payload.json
           TESTDATA_FILE: judge-data/${{ github.event.inputs.judge_id }}-testdata.zip
-        run: python3 judge.py
+        run: python3 judge.py 2>&1 || true
  
       - name: Upload result
         uses: actions/upload-artifact@v4
