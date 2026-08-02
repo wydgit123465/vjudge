@@ -40,6 +40,22 @@ jobs:
           memory_limit = int(payload.get('memory_limit', 256))
           problem_type = payload.get('problem_type', 'traditional')
  
+          # SYZOJ TestcaseResultType
+          ACCEPTED = 1
+          WRONG_ANSWER = 2
+          PARTIALLY_CORRECT = 3
+          MEMORY_LIMIT_EXCEEDED = 4
+          TIME_LIMIT_EXCEEDED = 5
+          OUTPUT_LIMIT_EXCEEDED = 6
+          FILE_ERROR = 7
+          RUNTIME_ERROR = 8
+          JUDGEMENT_FAILED = 9
+          INVALID_INTERACTION = 10
+ 
+          # SYZOJ TaskStatus
+          TASK_DONE = 2
+          TASK_FAILED = 3
+ 
           workdir = tempfile.mkdtemp()
           testdata_dir = os.path.join(workdir, 'testdata')
           os.makedirs(testdata_dir, exist_ok=True)
@@ -82,7 +98,7 @@ jobs:
                       cwd=workdir,
                       capture_output=True, text=True, timeout=30
                   )
-                  compile_status = 0 if cp.returncode == 0 else 1
+                  compile_status = TASK_DONE if cp.returncode == 0 else TASK_FAILED
                   compile_msg = cp.stdout + cp.stderr
                   result['compile'] = {'status': compile_status, 'message': compile_msg}
                   if cp.returncode != 0:
@@ -90,7 +106,7 @@ jobs:
                           json.dump(result, f)
                       sys.exit(0)
               except Exception as e:
-                  result['compile'] = {'status': 1, 'message': str(e)}
+                  result['compile'] = {'status': TASK_FAILED, 'message': str(e)}
                   with open('result.json', 'w') as f:
                       json.dump(result, f)
                   sys.exit(0)
@@ -180,17 +196,12 @@ jobs:
                       if os.path.exists(src):
                           shutil.copy2(src, dst)
  
-          # 类型映射（匹配原版 SYZOJ judger_interfaces）
-          # 0=Accepted, 1=WrongAnswer, 4=TLE, 5=MLE, 6=RE, 9=PartiallyCorrect
-          TASK_DONE = 0
-          TASK_FAILED = 1
- 
           def run_case(case_id):
               in_file = os.path.join(testdata_dir, input_pat.replace('#', str(case_id)))
               out_file = os.path.join(testdata_dir, output_pat.replace('#', str(case_id)))
  
               if not os.path.exists(in_file):
-                  return {'status': TASK_FAILED, 'result': {'type': 6, 'time': 0, 'memory': 0, 'scoringRate': 0}}
+                  return {'status': TASK_FAILED, 'result': {'type': RUNTIME_ERROR, 'time': 0, 'memory': 0, 'scoringRate': 0}}
  
               case_dir = tempfile.mkdtemp()
               try:
@@ -199,11 +210,7 @@ jobs:
  
                   # 交互题
                   if problem_type == 'interaction' and interactor_bin:
-                      user_input = os.path.join(case_dir, 'user_input')
-                      user_output = os.path.join(case_dir, 'user_output')
-                      with open(user_input, 'w') as f: f.write('')
-                      with open(user_output, 'w') as f: f.write('')
- 
+                      shutil.copy2(in_file, os.path.join(case_dir, 'input'))
                       start = tmod.time()
                       try:
                           inter_proc = subprocess.Popen(
@@ -211,10 +218,6 @@ jobs:
                               cwd=case_dir,
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                           )
-                          # 交互器 stdin <- 选手 stdout, 交互器 stdout -> 选手 stdin
-                          with open(in_file) as f:
-                              shutil.copy2(in_file, os.path.join(case_dir, 'input'))
- 
                           user_proc = subprocess.Popen(
                               lang_cfg['run'],
                               cwd=workdir,
@@ -230,7 +233,7 @@ jobs:
                           elapsed = int((tmod.time() - start) * 1000)
  
                           if user_proc.returncode != 0:
-                              return {'status': TASK_DONE, 'result': {'type': 6, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                              return {'status': TASK_DONE, 'result': {'type': RUNTIME_ERROR, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
  
                           score_file = os.path.join(case_dir, 'score.txt')
                           if os.path.exists(score_file):
@@ -239,17 +242,21 @@ jobs:
                           else:
                               score_val = 0
                           scoring_rate = score_val / 100
-                          tc_type = 0 if scoring_rate >= 1.0 else (9 if scoring_rate > 0 else 1)
+                          if scoring_rate >= 1.0:
+                              tc_type = ACCEPTED
+                          elif scoring_rate > 0:
+                              tc_type = PARTIALLY_CORRECT
+                          else:
+                              tc_type = WRONG_ANSWER
                           return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
  
                       except subprocess.TimeoutExpired:
                           user_proc.kill()
                           inter_proc.kill()
-                          return {'status': TASK_DONE, 'result': {'type': 4, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+                          return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
  
-                  # 传统题 / 提交答案题
+                  # 提交答案题
                   if problem_type == 'submit-answer':
-                      # extra_data 是选手提交的答案 zip
                       if payload.get('extra_data'):
                           ans_zip = base64.b64decode(payload['extra_data'])
                           user_out_file = output_pat.replace('#', str(case_id))
@@ -257,17 +264,17 @@ jobs:
                               try:
                                   user_out = az.read(user_out_file).decode()
                               except KeyError:
-                                  # 尝试不带路径
                                   for n in az.namelist():
                                       if os.path.basename(n) == user_out_file:
                                           user_out = az.read(n).decode()
                                           break
                                   else:
-                                      return {'status': TASK_DONE, 'result': {'type': 1, 'time': 0, 'memory': 0, 'scoringRate': 0}}
+                                      return {'status': TASK_DONE, 'result': {'type': WRONG_ANSWER, 'time': 0, 'memory': 0, 'scoringRate': 0}}
                       else:
                           user_out = ''
                       elapsed = 0
                   else:
+                      # 传统题
                       start = tmod.time()
                       try:
                           proc = subprocess.run(
@@ -279,11 +286,11 @@ jobs:
                           elapsed = int((tmod.time() - start) * 1000)
                           user_out = proc.stdout
                           if proc.returncode != 0:
-                              return {'status': TASK_DONE, 'result': {'type': 6, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                              return {'status': TASK_DONE, 'result': {'type': RUNTIME_ERROR, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
                           if elapsed > time_limit:
-                              return {'status': TASK_DONE, 'result': {'type': 4, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                              return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
                       except subprocess.TimeoutExpired:
-                          return {'status': TASK_DONE, 'result': {'type': 4, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+                          return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
  
                   # SPJ 判断
                   if spj_bin:
@@ -305,15 +312,20 @@ jobs:
                           scoring_rate = float(sp.stdout.strip()) / 100
                       except:
                           scoring_rate = 0
-                      tc_type = 0 if scoring_rate >= 1.0 else (9 if scoring_rate > 0 else 1)
+                      if scoring_rate >= 1.0:
+                          tc_type = ACCEPTED
+                      elif scoring_rate > 0:
+                          tc_type = PARTIALLY_CORRECT
+                      else:
+                          tc_type = WRONG_ANSWER
                       return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
                   else:
                       # 文本比较
                       if not os.path.exists(out_file):
-                          return {'status': TASK_DONE, 'result': {'type': 1, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                          return {'status': TASK_DONE, 'result': {'type': WRONG_ANSWER, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
                       with open(out_file) as f: expected = f.read()
                       ac = user_out.rstrip() == expected.rstrip()
-                      tc_type = 0 if ac else 1
+                      tc_type = ACCEPTED if ac else WRONG_ANSWER
                       return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': 1.0 if ac else 0.0}}
               finally:
                   shutil.rmtree(case_dir, ignore_errors=True)
@@ -368,3 +380,4 @@ jobs:
           name: result-${{ github.event.inputs.judge_id }}
           path: result.json
           retention-days: 1
+```!
