@@ -1,0 +1,345 @@
+import json, os, subprocess, base64, zipfile, io, tempfile, shutil, sys, yaml, time as tmod
+ 
+          judge_id = os.environ['JUDGE_ID']
+          payload_file = os.environ['PAYLOAD_FILE']
+          testdata_file = os.environ['TESTDATA_FILE']
+ 
+          with open(payload_file) as f:
+              payload = json.load(f)
+ 
+          language = payload.get('language', 'cpp')
+          code = payload.get('code', '')
+          time_limit = int(payload.get('time_limit', 1000))
+          memory_limit = int(payload.get('memory_limit', 256))
+          problem_type = payload.get('problem_type', 'traditional')
+ 
+          # SYZOJ TestcaseResultType
+          ACCEPTED = 1
+          WRONG_ANSWER = 2
+          PARTIALLY_CORRECT = 3
+          MEMORY_LIMIT_EXCEEDED = 4
+          TIME_LIMIT_EXCEEDED = 5
+          OUTPUT_LIMIT_EXCEEDED = 6
+          FILE_ERROR = 7
+          RUNTIME_ERROR = 8
+          JUDGEMENT_FAILED = 9
+          INVALID_INTERACTION = 10
+ 
+          # SYZOJ TaskStatus
+          TASK_DONE = 2
+          TASK_FAILED = 3
+ 
+          workdir = tempfile.mkdtemp()
+          testdata_dir = os.path.join(workdir, 'testdata')
+          os.makedirs(testdata_dir, exist_ok=True)
+ 
+          if os.path.exists(testdata_file):
+              with zipfile.ZipFile(testdata_file) as z:
+                  z.extractall(testdata_dir)
+ 
+          LANG = {
+              'cpp':    {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'cpp11':  {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++11', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'cpp17':  {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+              'c':      {'ext': 'c',   'compile': ['gcc', '-O2', '-o', 'sol', 'sol.c'], 'run': ['./sol']},
+              'python3':{'ext': 'py', 'compile': None, 'run': ['python3', 'sol.py']},
+              'python2':{'ext': 'py', 'compile': None, 'run': ['python2', 'sol.py']},
+              'java':   {'ext': 'java', 'compile': ['javac', 'sol.java'], 'run': ['java', 'sol']},
+              'pascal': {'ext': 'pas', 'compile': ['fpc', 'sol.pas'], 'run': ['./sol']},
+              'ruby':   {'ext': 'rb', 'compile': None, 'run': ['ruby', 'sol.rb']},
+              'haskell':{'ext': 'hs', 'compile': ['ghc', '-O2', '-o', 'sol', 'sol.hs'], 'run': ['./sol']},
+              'nodejs': {'ext': 'js', 'compile': None, 'run': ['node', 'sol.js']},
+          }
+ 
+          lang_cfg = LANG.get(language, LANG['cpp'])
+          src_file = os.path.join(workdir, f"sol.{lang_cfg['ext']}")
+ 
+          with open(src_file, 'w') as f:
+              f.write(code)
+ 
+          result = {
+              'compile': None,
+              'judge': {'subtasks': []},
+              'error': None
+          }
+ 
+          # 编译
+          if lang_cfg['compile']:
+              try:
+                  cp = subprocess.run(
+                      lang_cfg['compile'],
+                      cwd=workdir,
+                      capture_output=True, text=True, timeout=30
+                  )
+                  compile_status = TASK_DONE if cp.returncode == 0 else TASK_FAILED
+                  compile_msg = cp.stdout + cp.stderr
+                  result['compile'] = {'status': compile_status, 'message': compile_msg}
+                  if cp.returncode != 0:
+                      with open('result.json', 'w') as f:
+                          json.dump(result, f)
+                      sys.exit(0)
+              except Exception as e:
+                  result['compile'] = {'status': TASK_FAILED, 'message': str(e)}
+                  with open('result.json', 'w') as f:
+                      json.dump(result, f)
+                  sys.exit(0)
+ 
+          # 读取 data.yml
+          data_yml_path = os.path.join(testdata_dir, 'data.yml')
+          subtasks = []
+          input_pat = '#.in'
+          output_pat = '#.out'
+          spj_lang = None
+          spj_file = None
+          interactor_lang = None
+          interactor_file = None
+          extra_source_files = []
+ 
+          if os.path.exists(data_yml_path):
+              with open(data_yml_path) as f:
+                  dy = yaml.safe_load(f) or {}
+              input_pat = dy.get('inputFile', '#.in')
+              output_pat = dy.get('outputFile', dy.get('answerFile', '#.out'))
+              if dy.get('specialJudge'):
+                  spj_lang = dy['specialJudge']['language']
+                  spj_file = dy['specialJudge']['fileName']
+              if dy.get('interactor'):
+                  interactor_lang = dy['interactor']['language']
+                  interactor_file = dy['interactor']['fileName']
+              if dy.get('extraSourceFiles'):
+                  extra_source_files = dy['extraSourceFiles']
+              if dy.get('subtasks'):
+                  for st in dy['subtasks']:
+                      subtasks.append({
+                          'score': st['score'],
+                          'type': st.get('type', 'sum'),
+                          'cases': [str(c) for c in st['cases']]
+                      })
+              if problem_type == 'submit-answer' and dy.get('userOutput'):
+                  output_pat = dy['userOutput']
+ 
+          # 自动检测
+          if not subtasks:
+              td_files = os.listdir(testdata_dir)
+              ins = sorted([f for f in td_files if f.endswith('.in')])
+              cases = []
+              for inf in ins:
+                  base = inf[:-3]
+                  cases.append(base)
+              if cases:
+                  subtasks = [{'score': 100, 'type': 'sum', 'cases': cases}]
+                  has_out = any(f.endswith('.out') for f in td_files)
+                  has_ans = any(f.endswith('.ans') for f in td_files)
+                  input_pat = '#.in'
+                  output_pat = '#.out' if has_out else '#.ans'
+ 
+          # 检测 SPJ（无 data.yml）
+          if not spj_file:
+              for f in os.listdir(testdata_dir):
+                  if f.startswith('spj_'):
+                      parts = f[4:].split('.')
+                      spj_lang = parts[0]
+                      spj_file = f
+                      break
+ 
+          # 编译 SPJ
+          spj_bin = None
+          if spj_file:
+              spj_path = os.path.join(testdata_dir, spj_file)
+              spj_bin = os.path.join(workdir, 'spj')
+              if spj_lang in ('cpp', 'c'):
+                  cc = 'g++' if spj_lang == 'cpp' else 'gcc'
+                  subprocess.run([cc, '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
+ 
+          # 编译交互器
+          interactor_bin = None
+          if interactor_file:
+              interactor_path = os.path.join(testdata_dir, interactor_file)
+              interactor_bin = os.path.join(workdir, 'interactor')
+              if interactor_lang in ('cpp', 'c'):
+                  cc = 'g++' if interactor_lang == 'cpp' else 'gcc'
+                  subprocess.run([cc, '-O2', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
+ 
+          # 复制附加源文件
+          for esf in extra_source_files:
+              if esf.get('language') == language:
+                  for fobj in esf.get('files', []):
+                      src = os.path.join(testdata_dir, fobj['name'])
+                      dst = os.path.join(workdir, fobj['dest'])
+                      if os.path.exists(src):
+                          shutil.copy2(src, dst)
+ 
+          def run_case(case_id):
+              in_file = os.path.join(testdata_dir, input_pat.replace('#', str(case_id)))
+              out_file = os.path.join(testdata_dir, output_pat.replace('#', str(case_id)))
+ 
+              if not os.path.exists(in_file):
+                  return {'status': TASK_FAILED, 'result': {'type': RUNTIME_ERROR, 'time': 0, 'memory': 0, 'scoringRate': 0}}
+ 
+              case_dir = tempfile.mkdtemp()
+              try:
+                  with open(in_file) as fin:
+                      inp = fin.read()
+ 
+                  # 交互题
+                  if problem_type == 'interaction' and interactor_bin:
+                      shutil.copy2(in_file, os.path.join(case_dir, 'input'))
+                      start = tmod.time()
+                      try:
+                          inter_proc = subprocess.Popen(
+                              [interactor_bin],
+                              cwd=case_dir,
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                          )
+                          user_proc = subprocess.Popen(
+                              lang_cfg['run'],
+                              cwd=workdir,
+                              stdin=inter_proc.stdout,
+                              stdout=inter_proc.stdin,
+                              stderr=subprocess.PIPE
+                          )
+                          inter_proc.stdin.close()
+                          inter_proc.stdout.close()
+ 
+                          user_out, user_err = user_proc.communicate(timeout=time_limit/1000+1)
+                          inter_out, inter_err = inter_proc.communicate(timeout=5)
+                          elapsed = int((tmod.time() - start) * 1000)
+ 
+                          if user_proc.returncode != 0:
+                              return {'status': TASK_DONE, 'result': {'type': RUNTIME_ERROR, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+ 
+                          score_file = os.path.join(case_dir, 'score.txt')
+                          if os.path.exists(score_file):
+                              with open(score_file) as f:
+                                  score_val = float(f.read().strip())
+                          else:
+                              score_val = 0
+                          scoring_rate = score_val / 100
+                          if scoring_rate >= 1.0:
+                              tc_type = ACCEPTED
+                          elif scoring_rate > 0:
+                              tc_type = PARTIALLY_CORRECT
+                          else:
+                              tc_type = WRONG_ANSWER
+                          return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
+ 
+                      except subprocess.TimeoutExpired:
+                          user_proc.kill()
+                          inter_proc.kill()
+                          return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+ 
+                  # 提交答案题
+                  if problem_type == 'submit-answer':
+                      if payload.get('extra_data'):
+                          ans_zip = base64.b64decode(payload['extra_data'])
+                          user_out_file = output_pat.replace('#', str(case_id))
+                          with zipfile.ZipFile(io.BytesIO(ans_zip)) as az:
+                              try:
+                                  user_out = az.read(user_out_file).decode()
+                              except KeyError:
+                                  for n in az.namelist():
+                                      if os.path.basename(n) == user_out_file:
+                                          user_out = az.read(n).decode()
+                                          break
+                                  else:
+                                      return {'status': TASK_DONE, 'result': {'type': WRONG_ANSWER, 'time': 0, 'memory': 0, 'scoringRate': 0}}
+                      else:
+                          user_out = ''
+                      elapsed = 0
+                  else:
+                      # 传统题
+                      start = tmod.time()
+                      try:
+                          proc = subprocess.run(
+                              lang_cfg['run'],
+                              cwd=workdir,
+                              input=inp, capture_output=True, text=True,
+                              timeout=time_limit/1000+1
+                          )
+                          elapsed = int((tmod.time() - start) * 1000)
+                          user_out = proc.stdout
+                          if proc.returncode != 0:
+                              return {'status': TASK_DONE, 'result': {'type': RUNTIME_ERROR, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                          if elapsed > time_limit:
+                              return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                      except subprocess.TimeoutExpired:
+                          return {'status': TASK_DONE, 'result': {'type': TIME_LIMIT_EXCEEDED, 'time': time_limit, 'memory': 0, 'scoringRate': 0}}
+ 
+                  # SPJ 判断
+                  if spj_bin:
+                      user_out_file = os.path.join(case_dir, 'user_out')
+                      with open(user_out_file, 'w') as f: f.write(user_out)
+                      spj_input = os.path.join(case_dir, 'input')
+                      spj_answer = os.path.join(case_dir, 'answer')
+                      spj_code = os.path.join(case_dir, 'code')
+                      shutil.copy2(in_file, spj_input)
+                      if os.path.exists(out_file):
+                          shutil.copy2(out_file, spj_answer)
+                      with open(spj_code, 'w') as f: f.write(code)
+                      sp = subprocess.run(
+                          [spj_bin],
+                          cwd=case_dir,
+                          capture_output=True, text=True, timeout=10
+                      )
+                      try:
+                          scoring_rate = float(sp.stdout.strip()) / 100
+                      except:
+                          scoring_rate = 0
+                      if scoring_rate >= 1.0:
+                          tc_type = ACCEPTED
+                      elif scoring_rate > 0:
+                          tc_type = PARTIALLY_CORRECT
+                      else:
+                          tc_type = WRONG_ANSWER
+                      return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate}}
+                  else:
+                      # 文本比较
+                      if not os.path.exists(out_file):
+                          return {'status': TASK_DONE, 'result': {'type': WRONG_ANSWER, 'time': elapsed, 'memory': 0, 'scoringRate': 0}}
+                      with open(out_file) as f: expected = f.read()
+                      ac = user_out.rstrip() == expected.rstrip()
+                      tc_type = ACCEPTED if ac else WRONG_ANSWER
+                      return {'status': TASK_DONE, 'result': {'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': 1.0 if ac else 0.0}}
+              finally:
+                  shutil.rmtree(case_dir, ignore_errors=True)
+ 
+          # 跑所有子任务
+          detail_subtasks = []
+          for idx, st in enumerate(subtasks):
+              st_cases = []
+              st_scores = []
+              for cid in st['cases']:
+                  r = run_case(cid)
+                  case_result = r['result']
+                  case_result['caseId'] = cid
+                  st_cases.append({
+                      'status': r['status'],
+                      'result': case_result
+                  })
+                  st_scores.append(case_result.get('scoringRate', 0) * 100)
+ 
+              # 子任务分数计算
+              if st['type'] == 'sum':
+                  st_score = st['score'] * sum(st_scores) / (100 * len(st_scores)) if st_scores else 0
+              elif st['type'] == 'min':
+                  st_score = st['score'] * min(st_scores) / 100 if st_scores else 0
+              elif st['type'] == 'mul':
+                  m = 1.0
+                  for s in st_scores: m *= s / 100
+                  st_score = st['score'] * m
+              else:
+                  st_score = 0
+ 
+              detail_subtasks.append({
+                  'id': idx,
+                  'score': st_score,
+                  'type': st['type'],
+                  'cases': st_cases
+              })
+ 
+          result['judge'] = {'subtasks': detail_subtasks}
+ 
+          with open('result.json', 'w') as f:
+              json.dump(result, f, indent=2)
+ 
+          print("Judge completed.")
