@@ -10,10 +10,15 @@ jobs:
   judge:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: judge-data
+          ref: main
+ 
+      - name: Get judge data
+        run: |
+          git fetch origin judge-data
+          git checkout origin/judge-data -- judge-data/ || true
  
       - name: Install pyyaml
         run: pip install pyyaml -q
