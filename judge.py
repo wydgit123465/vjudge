@@ -348,7 +348,9 @@ def run_case(case_id):
             with open(os.path.join(case_dir, 'code'), 'w') as f:
                 f.write(code)
             spj_cmd = ['python3', spj_bin] if spj_lang == 'python3' else [spj_bin]
-            sp = subprocess.run(spj_cmd, cwd=case_dir, capture_output=True, text=True, timeout=30)
+            sp = subprocess.run(spj_cmd, cwd=case_dir, capture_output=True, text=True, timeout=60)
+            print(f"[Judge] SPJ stdout: {sp.stdout.strip()}")
+            print(f"[Judge] SPJ stderr: {sp.stderr.strip()}")
             try:
                 scoring_rate = float(sp.stdout.strip()) / 100
             except Exception:
