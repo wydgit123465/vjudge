@@ -331,7 +331,8 @@ def run_case(case_id):
                 shutil.copy2(out_file, os.path.join(case_dir, 'answer'))
             with open(os.path.join(case_dir, 'code'), 'w') as f:
                 f.write(code)
-            sp = subprocess.run([spj_bin], cwd=case_dir, capture_output=True, text=True, timeout=10)
+            spj_cmd = ['python3', spj_bin] if spj_lang == 'python3' else [spj_bin]
+            sp = subprocess.run(spj_cmd, cwd=case_dir, capture_output=True, text=True, timeout=30)
             try:
                 scoring_rate = float(sp.stdout.strip()) / 100
             except Exception:
