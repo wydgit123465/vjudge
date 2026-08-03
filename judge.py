@@ -9,6 +9,7 @@ import shutil
 import sys
 import yaml
 import time as tmod
+import re
  
 judge_id = os.environ['JUDGE_ID']
 payload_file = os.environ['PAYLOAD_FILE']
@@ -80,7 +81,22 @@ result = {
     'error': None
 }
  
-# 编译
+# Truncate helpers
+def truncate(s, maxlen=2000):
+    if s is None:
+        return None
+    if len(s) <= maxlen:
+        return s
+    return s[:maxlen] + '\n... (truncated, total %d chars)' % len(s)
+ 
+def truncate_io(obj, maxlen=2000):
+    if obj is None:
+        return None
+    if isinstance(obj, dict) and 'content' in obj:
+        obj['content'] = truncate(obj['content'], maxlen)
+    return obj
+ 
+# Compile
 if lang_cfg['compile']:
     try:
         cp = subprocess.run(
@@ -104,7 +120,7 @@ if lang_cfg['compile']:
         print(f"[Judge] Compile exception: {e}")
         sys.exit(0)
  
-# 读取 data.yml
+# Read data.yml
 data_yml_path = os.path.join(testdata_dir, 'data.yml')
 subtasks = []
 input_pat = '#.in'
@@ -139,7 +155,7 @@ if os.path.exists(data_yml_path):
         output_pat = dy['userOutput']
     print(f"[Judge] data.yml loaded: subtasks={len(subtasks)} input_pat={input_pat} output_pat={output_pat}")
  
-# 自动检测测试点
+# Auto detect testcases
 if not subtasks:
     td_files = os.listdir(testdata_dir)
     ins = sorted([f for f in td_files if f.endswith('.in')])
@@ -151,7 +167,7 @@ if not subtasks:
         output_pat = '#.out' if has_out else '#.ans'
     print(f"[Judge] Auto detected: cases={cases} output_pat={output_pat}")
  
-# 检测 SPJ
+# Detect SPJ
 if not spj_file:
     for f in os.listdir(testdata_dir):
         if f.startswith('spj_'):
@@ -160,7 +176,7 @@ if not spj_file:
             spj_file = f
             break
  
-# 编译 SPJ
+# Compile SPJ
 spj_bin = None
 if spj_file:
     spj_path = os.path.join(testdata_dir, spj_file)
@@ -172,9 +188,9 @@ if spj_file:
         subprocess.run(['gcc', '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
     elif spj_lang == 'python3':
         spj_bin = spj_path
-    print(f"[Judge] SPJ: {spj_file}, bin={spj_bin}")
+    print(f"[Judge] SPJ: {spj_file}, lang={spj_lang}, bin={spj_bin}")
  
-# 编译交互器
+# Compile interactor
 interactor_bin = None
 if interactor_file:
     interactor_path = os.path.join(testdata_dir, interactor_file)
@@ -183,7 +199,7 @@ if interactor_file:
         cc = 'g++' if interactor_lang == 'cpp' else 'gcc'
         subprocess.run([cc, '-O2', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
  
-# 复制附加源文件
+# Copy extra source files
 for esf in extra_source_files:
     if esf.get('language') == language:
         for fobj in esf.get('files', []):
@@ -218,7 +234,7 @@ def run_case(case_id):
     user_err = ''
  
     try:
-        # 交互题
+        # Interactive problem
         if problem_type == 'interaction' and interactor_bin:
             shutil.copy2(in_file, os.path.join(case_dir, 'input'))
             start = tmod.time()
@@ -266,7 +282,7 @@ def run_case(case_id):
                     'userOutput': '', 'userError': ''
                 }}
  
-        # 提交答案题
+        # Submit-answer problem
         if problem_type == 'submit-answer':
             if payload.get('extra_data'):
                 ans_zip = base64.b64decode(payload['extra_data'])
@@ -288,7 +304,7 @@ def run_case(case_id):
                             }}
             elapsed = 0
         else:
-            # 传统题
+            # Traditional problem
             start = tmod.time()
             try:
                 proc = subprocess.run(
@@ -321,7 +337,7 @@ def run_case(case_id):
                     'userOutput': '', 'userError': ''
                 }}
  
-        # SPJ 判断
+        # SPJ judging
         if spj_bin:
             user_out_file = os.path.join(case_dir, 'user_out')
             with open(user_out_file, 'w') as f:
@@ -363,7 +379,7 @@ def run_case(case_id):
         shutil.rmtree(case_dir, ignore_errors=True)
  
  
-# 跑所有子任务
+# Run all subtasks
 detail_subtasks = []
 for idx, st in enumerate(subtasks):
     st_cases = []
@@ -373,6 +389,18 @@ for idx, st in enumerate(subtasks):
         r = run_case(cid)
         case_result = r['result']
         case_result['caseId'] = cid
+ 
+        # Truncate long content
+        for key in ['input', 'output']:
+            if case_result.get(key) and isinstance(case_result[key], dict):
+                if case_result[key].get('content'):
+                    case_result[key]['content'] = truncate(case_result[key]['content'])
+        for key in ['userOutput', 'userError']:
+            if case_result.get(key):
+                case_result[key] = truncate(case_result[key])
+        if case_result.get('spjMessage'):
+            case_result['spjMessage'] = truncate(case_result['spjMessage'])
+ 
         st_cases.append({'status': r['status'], 'result': case_result})
         st_scores.append(case_result.get('scoringRate', 0) * 100)
         print(f"[Judge] Case {cid} result: type={case_result['type']} time={case_result['time']}")
