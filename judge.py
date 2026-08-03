@@ -164,11 +164,15 @@ if not spj_file:
 spj_bin = None
 if spj_file:
     spj_path = os.path.join(testdata_dir, spj_file)
-    spj_bin = os.path.join(workdir, 'spj')
-    if spj_lang in ('cpp', 'c'):
-        cc = 'g++' if spj_lang == 'cpp' else 'gcc'
-        subprocess.run([cc, '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
-    print(f"[Judge] SPJ compiled: {spj_file}")
+    if spj_lang == 'cpp':
+        spj_bin = os.path.join(workdir, 'spj')
+        subprocess.run(['g++', '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
+    elif spj_lang == 'c':
+        spj_bin = os.path.join(workdir, 'spj')
+        subprocess.run(['gcc', '-O2', '-o', spj_bin, spj_path], cwd=workdir, capture_output=True)
+    elif spj_lang == 'python3':
+        spj_bin = spj_path
+    print(f"[Judge] SPJ: {spj_file}, bin={spj_bin}")
  
 # 编译交互器
 interactor_bin = None
