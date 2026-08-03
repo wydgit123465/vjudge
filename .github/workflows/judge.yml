@@ -28,7 +28,12 @@ jobs:
           JUDGE_ID: ${{ github.event.inputs.judge_id }}
           PAYLOAD_FILE: judge-data/${{ github.event.inputs.judge_id }}-payload.json
           TESTDATA_FILE: judge-data/${{ github.event.inputs.judge_id }}-testdata.zip
-        run: python3 judge.py 2>&1 || true
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_MODEL: ${{ secrets.CF_MODEL }}
+        run: |
+          echo "=== running judge ==="
+          python3 judge.py 2>&1 || true
  
       - name: Upload result
         uses: actions/upload-artifact@v4
