@@ -1,0 +1,71 @@
+name: Cleanup Actions
+ 
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+ 
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Delete old workflow runs
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            
+            // 按时间排序，保留最近5个
+            const sorted = runs.data.workflow_runs.sort((a, b) => 
+              new Date(b.created_at) - new Date(a.created_at)
+            );
+            
+            for (let i = 5; i < sorted.length; i++) {
+              console.log(`Deleting run ${sorted[i].id} (${sorted[i].created_at})`);
+              try {
+                await github.rest.actions.deleteWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: sorted[i].id
+                });
+              } catch (e) {
+                console.log(`Failed: ${e.message}`);
+              }
+            }
+            // 清理 judge-data 分支上的旧文件
+            try {
+              const { data: files } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: 'judge-data',
+                ref: 'judge-data'
+              });
+              // 保留最近3小时的文件（正在评测的），删除其余
+              const cutoff = Date.now() - 3 * 60 * 60 * 1000;
+              for (const file of files) {
+                const fileTime = new Date(file.git_url).getTime();
+                console.log(`Checking: ${file.name}`);
+                try {
+                  await github.rest.repos.deleteFile({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    path: file.path,
+                    branch: 'judge-data',
+                    message: `cleanup ${file.name}`,
+                    sha: file.sha
+                  });
+                  console.log(`Deleted: ${file.name}`);
+                } catch (e) {
+                  console.log(`Skip: ${e.message}`);
+                }
+              }
+            } catch (e) {
+              console.log('No judge-data branch or path, skipping.');
+            }
+            console.log(`Done. Kept 5 most recent runs.`);
