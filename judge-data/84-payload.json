@@ -1,0 +1,1 @@
+{"judge_id":84,"task_id":"x0tGMh0jiK","problem_type":"interaction","language":"cpp11","code":"#include<bits/stdc++.h>\r\nusing namespace std;\r\nint main(){\r\n    cout<<\"有了陈二奶奶打辅助\";\r\n    return 0;\r\n}","time_limit":1000,"memory_limit":512,"file_io":false,"file_io_input":null,"file_io_output":null,"extra_data":null}
