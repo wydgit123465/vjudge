@@ -10,6 +10,7 @@ import sys
 import yaml
 import time as tmod
 import re
+import threading
  
 judge_id = os.environ['JUDGE_ID']
 payload_file = os.environ['PAYLOAD_FILE']
@@ -239,23 +240,63 @@ def run_case(case_id):
                 )
                 inter_proc = subprocess.Popen(
                     [interactor_bin], cwd=case_dir,
-                    stdin=user_proc.stdout, stdout=user_proc.stdin, stderr=subprocess.PIPE
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
-                user_proc.stdout.close()
-                user_proc.stdin.close()
  
-                user_out_b, user_err_b = user_proc.communicate(timeout=time_limit / 1000 + 2)
+                # 线程转发: user stdout -> interactor stdin
+                def pipe_u2i():
+                    try:
+                        while True:
+                            data = user_proc.stdout.read(4096)
+                            if not data:
+                                break
+                            inter_proc.stdin.write(data)
+                    except:
+                        pass
+                    finally:
+                        try:
+                            inter_proc.stdin.close()
+                        except:
+                            pass
+ 
+                # 线程转发: interactor stdout -> user stdin
+                def pipe_i2u():
+                    try:
+                        while True:
+                            data = inter_proc.stdout.read(4096)
+                            if not data:
+                                break
+                            user_proc.stdin.write(data)
+                    except:
+                        pass
+                    finally:
+                        try:
+                            user_proc.stdin.close()
+                        except:
+                            pass
+ 
+                t1 = threading.Thread(target=pipe_u2i)
+                t2 = threading.Thread(target=pipe_i2u)
+                t1.start()
+                t2.start()
+ 
+                # 等待选手进程结束
+                user_proc.wait(timeout=time_limit / 1000 + 2)
                 elapsed = int((tmod.time() - start) * 1000)
-                user_out = user_out_b.decode('utf-8', errors='replace') if isinstance(user_out_b, bytes) else str(user_out_b)
-                user_err = user_err_b.decode('utf-8', errors='replace') if isinstance(user_err_b, bytes) else str(user_err_b)
  
+                # 等待交互库结束
                 try:
-                    inter_out_b, inter_err_b = inter_proc.communicate(timeout=5)
-                    inter_err = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
+                    inter_proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     inter_proc.kill()
-                    inter_out_b, inter_err_b = inter_proc.communicate()
-                    inter_err = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
+ 
+                t1.join(timeout=5)
+                t2.join(timeout=5)
+ 
+                user_err_b = user_proc.stderr.read()
+                inter_err_b = inter_proc.stderr.read()
+                user_err = user_err_b.decode('utf-8', errors='replace') if isinstance(user_err_b, bytes) else str(user_err_b)
+                inter_err = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
  
                 if user_proc.returncode != 0:
                     return {'status': TASK_DONE, 'result': {
@@ -290,6 +331,8 @@ def run_case(case_id):
             except subprocess.TimeoutExpired:
                 user_proc.kill()
                 inter_proc.kill()
+                t1.join(timeout=2)
+                t2.join(timeout=2)
                 return {'status': TASK_DONE, 'result': {
                     'type': TIME_LIMIT_EXCEEDED, 'time': time_limit, 'memory': 0, 'scoringRate': 0,
                     'input': {'name': f'{case_id}.in', 'content': inp},
