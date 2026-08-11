@@ -89,13 +89,6 @@ def truncate(s, maxlen=2000):
         return s
     return s[:maxlen] + '\n... (truncated, total %d chars)' % len(s)
  
-def truncate_io(obj, maxlen=2000):
-    if obj is None:
-        return None
-    if isinstance(obj, dict) and 'content' in obj:
-        obj['content'] = truncate(obj['content'], maxlen)
-    return obj
- 
 # Compile
 if lang_cfg['compile']:
     try:
@@ -198,6 +191,7 @@ if interactor_file:
     if interactor_lang in ('cpp', 'c'):
         cc = 'g++' if interactor_lang == 'cpp' else 'gcc'
         subprocess.run([cc, '-O2', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
+    print(f"[Judge] Interactor: {interactor_file}, bin={interactor_bin}")
  
 # Copy extra source files
 for esf in extra_source_files:
@@ -239,38 +233,59 @@ def run_case(case_id):
             shutil.copy2(in_file, os.path.join(case_dir, 'input'))
             start = tmod.time()
             try:
-                inter_proc = subprocess.Popen(
-                    [interactor_bin], cwd=case_dir,
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-                )
                 user_proc = subprocess.Popen(
                     lang_cfg['run'], cwd=workdir,
-                    stdin=inter_proc.stdout, stdout=inter_proc.stdin, stderr=subprocess.PIPE
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE
                 )
-                inter_proc.stdin.close()
-                inter_proc.stdout.close()
-                _, _ = user_proc.communicate(timeout=time_limit / 1000 + 1)
-                inter_out, inter_err_b = inter_proc.communicate(timeout=5)
+                inter_proc = subprocess.Popen(
+                    [interactor_bin], cwd=case_dir,
+                    stdin=user_proc.stdout, stdout=user_proc.stdin, stderr=subprocess.PIPE
+                )
+                user_proc.stdout.close()
+                user_proc.stdin.close()
+ 
+                user_out_b, user_err_b = user_proc.communicate(timeout=time_limit / 1000 + 2)
                 elapsed = int((tmod.time() - start) * 1000)
+                user_out = user_out_b.decode('utf-8', errors='replace') if isinstance(user_out_b, bytes) else str(user_out_b)
+                user_err = user_err_b.decode('utf-8', errors='replace') if isinstance(user_err_b, bytes) else str(user_err_b)
+ 
+                try:
+                    inter_out_b, inter_err_b = inter_proc.communicate(timeout=5)
+                    inter_err = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
+                except subprocess.TimeoutExpired:
+                    inter_proc.kill()
+                    inter_out_b, inter_err_b = inter_proc.communicate()
+                    inter_err = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
  
                 if user_proc.returncode != 0:
                     return {'status': TASK_DONE, 'result': {
                         'type': RUNTIME_ERROR, 'time': elapsed, 'memory': 0, 'scoringRate': 0,
                         'input': {'name': f'{case_id}.in', 'content': inp},
                         'output': {'name': f'{case_id}.out', 'content': expected},
-                        'userOutput': '', 'userError': ''
+                        'userOutput': '', 'userError': user_err
+                    }}
+ 
+                if elapsed > time_limit:
+                    return {'status': TASK_DONE, 'result': {
+                        'type': TIME_LIMIT_EXCEEDED, 'time': elapsed, 'memory': 0, 'scoringRate': 0,
+                        'input': {'name': f'{case_id}.in', 'content': inp},
+                        'output': {'name': f'{case_id}.out', 'content': expected},
+                        'userOutput': '', 'userError': user_err
                     }}
  
                 score_file = os.path.join(case_dir, 'score.txt')
-                score_val = float(open(score_file).read().strip()) if os.path.exists(score_file) else 0
+                if os.path.exists(score_file):
+                    score_val = float(open(score_file).read().strip())
+                else:
+                    score_val = 0
                 scoring_rate = score_val / 100
                 tc_type = ACCEPTED if scoring_rate >= 1.0 else (PARTIALLY_CORRECT if scoring_rate > 0 else WRONG_ANSWER)
-                spj_msg = inter_err_b.decode('utf-8', errors='replace') if isinstance(inter_err_b, bytes) else str(inter_err_b)
+ 
                 return {'status': TASK_DONE, 'result': {
                     'type': tc_type, 'time': elapsed, 'memory': 0, 'scoringRate': scoring_rate,
                     'input': {'name': f'{case_id}.in', 'content': inp},
                     'output': {'name': f'{case_id}.out', 'content': expected},
-                    'userOutput': '', 'userError': '', 'spjMessage': spj_msg
+                    'userOutput': '', 'userError': user_err, 'spjMessage': inter_err
                 }}
             except subprocess.TimeoutExpired:
                 user_proc.kill()
@@ -310,7 +325,7 @@ def run_case(case_id):
                 proc = subprocess.run(
                     lang_cfg['run'], cwd=workdir,
                     input=inp, capture_output=True, text=True,
-                    timeout=time_limit / 1000 + 1
+                    timeout=time_limit / 1000 + 2
                 )
                 elapsed = int((tmod.time() - start) * 1000)
                 user_out = proc.stdout
