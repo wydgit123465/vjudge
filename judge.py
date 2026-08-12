@@ -76,6 +76,16 @@ src_file = os.path.join(workdir, f"sol.{lang_cfg['ext']}")
 with open(src_file, 'w', encoding='utf-8') as f:
     f.write(code)
  
+# 调试：验证源码编码
+with open(src_file, 'rb') as f:
+    raw = f.read()
+print(f"[Judge] Source file size: {len(raw)} bytes")
+# 打印包含非ASCII字符的行
+for i, line in enumerate(raw.split(b'\n')):
+    if any(b > 127 for b in line):
+        print(f"[Judge] Line {i+1} has non-ASCII: {line[:100]}")
+        print(f"[Judge] Hex: {line[:100].hex()}")
+ 
 result = {
     'compile': None,
     'judge': {'subtasks': []},
