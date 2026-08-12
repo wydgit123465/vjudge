@@ -57,10 +57,10 @@ else:
     print(f"[Judge] No testdata file found at {testdata_file}")
  
 LANG = {
-    'cpp':     {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
-    'cpp11':   {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++11', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
-    'cpp17':   {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
-    'c':       {'ext': 'c',   'compile': ['gcc', '-O2', '-o', 'sol', 'sol.c'], 'run': ['./sol']},
+    'cpp':     {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-finput-charset=UTF-8', '-fexec-charset=UTF-8', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+    'cpp11':   {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++11', '-finput-charset=UTF-8', '-fexec-charset=UTF-8', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+    'cpp17':   {'ext': 'cpp', 'compile': ['g++', '-O2', '-std=c++17', '-finput-charset=UTF-8', '-fexec-charset=UTF-8', '-o', 'sol', 'sol.cpp'], 'run': ['./sol']},
+    'c':       {'ext': 'c',   'compile': ['gcc', '-O2', '-finput-charset=UTF-8', '-fexec-charset=UTF-8', '-o', 'sol', 'sol.c'], 'run': ['./sol']},
     'python3': {'ext': 'py',  'compile': None, 'run': ['python3', 'sol.py']},
     'python2': {'ext': 'py',  'compile': None, 'run': ['python2', 'sol.py']},
     'java':    {'ext': 'java','compile': ['javac', 'sol.java'], 'run': ['java', 'sol']},
@@ -73,7 +73,7 @@ LANG = {
 lang_cfg = LANG.get(language, LANG['cpp'])
 src_file = os.path.join(workdir, f"sol.{lang_cfg['ext']}")
  
-with open(src_file, 'w') as f:
+with open(src_file, 'w', encoding='utf-8') as f:
     f.write(code)
  
 result = {
