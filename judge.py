@@ -202,8 +202,14 @@ if interactor_file:
     interactor_bin = os.path.join(workdir, 'interactor')
     if interactor_lang in ('cpp', 'c'):
         cc = 'g++' if interactor_lang == 'cpp' else 'gcc'
-        subprocess.run([cc, '-O2', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
+        subprocess.run([cc, '-O2', '-finput-charset=UTF-8', '-fexec-charset=UTF-8', '-o', interactor_bin, interactor_path], cwd=workdir, capture_output=True)
     print(f"[Judge] Interactor: {interactor_file}, bin={interactor_bin}")
+     # 测试交互库能否正常运行
+    try:
+        test_r = subprocess.run([interactor_bin], input=b'', capture_output=True, timeout=3)
+        print(f"[Judge] Interactor test: rc={test_r.returncode}")
+    except Exception as e:
+        print(f"[Judge] Interactor test failed: {e}")
  
 # Copy extra source files
 for esf in extra_source_files:
