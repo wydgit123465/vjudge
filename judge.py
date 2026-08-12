@@ -72,7 +72,8 @@ LANG = {
  
 lang_cfg = LANG.get(language, LANG['cpp'])
 src_file = os.path.join(workdir, f"sol.{lang_cfg['ext']}")
- 
+
+code = code.replace('\r\n', '\n').replace('\r', '\n')
 with open(src_file, 'w', encoding='utf-8') as f:
     f.write(code)
  
