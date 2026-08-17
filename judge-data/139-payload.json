@@ -1,0 +1,1 @@
+{"judge_id":139,"task_id":"folw3h2qUt","problem_type":"traditional","language":"cpp17","code":"#include<bits/stdc++.h>\r\nusing namespace std;\r\n\r\nint main() {\r\n    int t;\r\n    cin >> t;\r\n\r\n    for(int i = 0; i < t; i++) cout << \"Yos\\n\";\r\n}","time_limit":1000,"memory_limit":512,"file_io":false,"file_io_input":null,"file_io_output":null,"extra_data":null}
