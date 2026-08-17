@@ -1,0 +1,1 @@
+{"judge_id":156,"task_id":"wZnDVbbe2s","problem_type":"traditional","language":"cpp17","code":"#include<bits/stdc++.h>\r\nusing namespace std;\r\nint n;\r\nint main(){\r\n    scanf(\"%d\",&n);\r\n    printf(\"!\\n114514\");\r\n}","time_limit":1000,"memory_limit":512,"file_io":false,"file_io_input":null,"file_io_output":null,"extra_data":null}
