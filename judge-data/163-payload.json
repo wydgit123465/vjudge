@@ -1,1 +1,0 @@
-{"judge_id":163,"task_id":"TRcSjVx9hT","problem_type":"traditional","language":"cpp","code":"#include<bits/stdc++.h>\r\nusing namespace std;\r\nint main(){\r\n\tcout<<9178；\r\n}","time_limit":1000,"memory_limit":256,"file_io":false,"file_io_input":null,"file_io_output":null,"extra_data":null}
