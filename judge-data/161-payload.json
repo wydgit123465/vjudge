@@ -1,1 +1,0 @@
-{"judge_id":161,"task_id":"wonyQPbGw9","problem_type":"traditional","language":"cpp","code":"#include<bits/stdc++.h>\r\nusing namespace std;\r\nint main(){cout << \"!!!\";}\r\n","time_limit":1000,"memory_limit":512,"file_io":false,"file_io_input":null,"file_io_output":null,"extra_data":null}
